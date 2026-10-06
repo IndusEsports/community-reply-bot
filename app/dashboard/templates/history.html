@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+  {% if rows|length == 0 %}
+    <p class="empty">No history yet.</p>
+  {% else %}
+    <table class="history-table">
+      <thead>
+        <tr><th>When</th><th>Platform</th><th>Account</th><th>Comment</th><th>Reply</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr class="status-{{ row['status'] }}">
+            <td>{{ row['sent_at'] or row['discovered_at'] }}</td>
+            <td>{{ row['platform'] }}</td>
+            <td>{{ row['account_slug'] }}</td>
+            <td>{{ row['text'] }}</td>
+            <td>{{ row['draft_reply'] or '-' }}</td>
+            <td>{{ row['status'] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

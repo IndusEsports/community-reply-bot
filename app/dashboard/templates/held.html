@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Held{% endblock %}
+{% block content %}
+  <p class="hint">These never reached Gemini — they were held by a hard-coded safety rule
+  (a link, refund/fix-date/reward language, or the daily cap). Draft one anyway if you've
+  checked it and it's fine, or dismiss it.</p>
+
+  {% if rows|length == 0 %}
+    <p class="empty">Nothing held right now.</p>
+  {% else %}
+    <div class="card-list">
+      {% for row in rows %}
+        <div class="card">
+          <div class="card-meta">
+            <span class="platform-badge">{{ row['platform'] }}</span>
+            <span>{{ row['account_slug'] }}</span>
+            <span>by {{ row['author'] }}</span>
+            <span class="status-error">held: {{ row['reason'] }}</span>
+          </div>
+          <p class="comment-text">"{{ row['text'] }}"</p>
+          <form method="post" action="/api/held/{{ row['id'] }}/draft-anyway" style="display:inline">
+            <button type="submit" class="approve">Draft reply anyway</button>
+          </form>
+          <form method="post" action="/api/held/{{ row['id'] }}/dismiss" style="display:inline">
+            <button type="submit" class="reject">Dismiss</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

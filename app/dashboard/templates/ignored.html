@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Ignored{% endblock %}
+{% block content %}
+  <p class="hint">Comments the bot deliberately left untouched: duplicates, comments from
+  before it started, anything older than 60 minutes, your own comments, or ones Gemini judged
+  angry/spammy. Read-only — nothing to action here, just transparency.</p>
+
+  {% if rows|length == 0 %}
+    <p class="empty">Nothing ignored yet.</p>
+  {% else %}
+    <table class="history-table">
+      <thead>
+        <tr><th>When</th><th>Platform</th><th>Account</th><th>Comment</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row['discovered_at'] }}</td>
+            <td>{{ row['platform'] }}</td>
+            <td>{{ row['account_slug'] }}</td>
+            <td>{{ row['text'] }}</td>
+            <td>{{ row['reason'] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

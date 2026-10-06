@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}TikTok Helper{% endblock %}
+{% block content %}
+  <p class="hint">TikTok has no safe official way for a bot to reply, so paste a comment below,
+  get a drafted reply in your voice, then copy it into TikTok yourself.</p>
+
+  <form method="post" action="/tiktok-helper" class="tiktok-form">
+    <label>
+      Game
+      <select name="slug">
+        {% for key, cfg in accounts.items() %}
+          <option value="{{ key }}" {% if key == slug %}selected{% endif %}>{{ cfg.display_name or key }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Comment text
+      <textarea name="comment_text" rows="4" required>{{ comment_text }}</textarea>
+    </label>
+    <button type="submit">Draft reply</button>
+  </form>
+
+  {% if note %}
+    <p class="note">{{ note }}</p>
+  {% endif %}
+
+  {% if draft %}
+    <div class="draft-box">
+      <p class="draft-text" id="draft-text">{{ draft }}</p>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('draft-text').innerText)">Copy</button>
+    </div>
+  {% endif %}
+{% endblock %}

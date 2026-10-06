@@ -1,0 +1,211 @@
+:root {
+  --bg: #0f1115;
+  --card: #171a21;
+  --text: #e8e8ec;
+  --muted: #9a9ca5;
+  --accent: #5b8cff;
+  --good: #3ecf8e;
+  --bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #262a33;
+}
+
+.topbar nav a {
+  color: var(--muted);
+  text-decoration: none;
+  margin-left: 20px;
+}
+
+.topbar nav a:hover { color: var(--text); }
+
+.status-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--muted);
+  background: #12151c;
+  border-bottom: 1px solid #262a33;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.status-up { background: var(--good); }
+.status-down { background: var(--bad); }
+.status-sep { opacity: 0.5; }
+.status-error { color: var(--bad); }
+
+.restart-form { margin-left: auto; }
+.restart-form button {
+  background: #262a33;
+  color: var(--text);
+  padding: 4px 10px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.restart-form button:hover { background: #333a47; }
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.stat-tile {
+  background: var(--card);
+  border: 1px solid #262a33;
+  border-radius: 8px;
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  min-width: 90px;
+}
+
+.stat-n { font-size: 22px; font-weight: 700; }
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+.cap-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.cap-pill {
+  background: #1c2230;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+main { padding: 24px; max-width: 900px; margin: 0 auto; }
+
+.mode-banner {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #1c2230;
+  margin-bottom: 20px;
+}
+
+.mode-auto { border-left: 4px solid var(--good); }
+.mode-review { border-left: 4px solid var(--accent); }
+
+.empty { color: var(--muted); }
+
+.card-list { display: flex; flex-direction: column; gap: 14px; }
+
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid #262a33;
+}
+
+.card-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.platform-badge {
+  background: #262a33;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.comment-text { color: var(--muted); font-style: italic; }
+.draft-text {
+  background: #10131a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  margin-top: 10px;
+  margin-right: 8px;
+}
+
+.approve { background: var(--good); color: #052e1c; }
+.reject { background: var(--bad); color: #330b0b; }
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.history-table th, .history-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #262a33;
+}
+
+.status-rejected { color: var(--bad); }
+.status-sent { color: var(--good); }
+
+.tiktok-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 520px;
+}
+
+.tiktok-form select, .tiktok-form textarea {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid #262a33;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: inherit;
+}
+
+.tiktok-form button {
+  background: var(--accent);
+  color: #06112b;
+  align-self: flex-start;
+}
+
+.note { color: var(--muted); margin-top: 16px; }
+
+.draft-box {
+  margin-top: 16px;
+  background: var(--card);
+  border: 1px solid #262a33;
+  border-radius: 8px;
+  padding: 14px;
+}

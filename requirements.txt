@@ -1,0 +1,11 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+jinja2>=3.1
+python-multipart>=0.0.9
+pyyaml>=6.0
+python-dotenv>=1.0
+google-genai>=0.3
+requests>=2.32
+itsdangerous>=2.2
+tweepy>=4.14
+psycopg2-binary>=2.9

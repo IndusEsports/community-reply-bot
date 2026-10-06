@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Community Reply Bot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  {% set status = bot_status() %}
+  <header class="topbar">
+    <h1>Community Reply Bot</h1>
+    <nav>
+      <a href="/">Review Queue</a>
+      <a href="/held">Held</a>
+      <a href="/failed">Failed</a>
+      <a href="/ignored">Ignored</a>
+      <a href="/history">History</a>
+      <a href="/tiktok-helper">TikTok Helper</a>
+    </nav>
+  </header>
+  <div class="status-strip">
+    <span class="status-dot {{ 'status-up' if status.running else 'status-down' }}"></span>
+    <span>{{ 'running' if status.running else 'stopped' }}</span>
+    <span class="status-sep">&middot;</span>
+    <span>mode: <strong>{{ status.mode }}</strong></span>
+    <span class="status-sep">&middot;</span>
+    <span>
+      last poll:
+      {% if status.last_poll_finished_at %}{{ status.last_poll_finished_at }}{% else %}never yet{% endif %}
+    </span>
+    {% if status.last_poll_error %}
+      <span class="status-sep">&middot;</span>
+      <span class="status-error">last error: {{ status.last_poll_error }}</span>
+    {% endif %}
+    <form method="post" action="/api/restart" class="restart-form">
+      <button type="submit" title="Reloads accounts.yaml / tone/voice.md and restarts the poll + sender loops">Restart bot</button>
+    </form>
+  </div>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

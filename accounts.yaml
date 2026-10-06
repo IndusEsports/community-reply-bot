@@ -1,0 +1,40 @@
+# One block per game. Copy the whole "indus" block, rename the key and `slug`,
+# and prefix its env vars with the new slug (uppercased) to add another game
+# (e.g. PRIMERUSH_YT_CHANNEL_ID). The bot only states facts written in `faq`
+# below — it will not invent release dates, prices, or promises.
+
+indus:
+  slug: indus
+  display_name: "Showdown FPS"
+  about: >
+    Showdown is a competitive first-person shooter built on Roblox, made by Indus
+    Esports. Fast-paced arena matches, skill-based weapons, ranked play.
+  support_hint: >
+    For bugs or account issues, ask the player to describe what happened and
+    report it on the official Discord support channel — do not promise a fix
+    date or compensation.
+  faq:
+    - q: "When is the next update / season?"
+      a: "We don't have a public date yet — announcements go out on Discord and the socials first."
+    - q: "How do I report a bug?"
+      a: "Post it in the #bug-reports channel on our Discord with your device and what happened."
+    - q: "Is this on mobile / console?"
+      a: "Currently Showdown is playable on Roblox, which supports PC, mobile, and console."
+  platforms:
+    youtube:
+      enabled_env: INDUS_YT_ENABLED
+      channel_id_env: INDUS_YT_CHANNEL_ID
+      client_id_env: INDUS_YT_CLIENT_ID
+      client_secret_env: INDUS_YT_CLIENT_SECRET
+      refresh_token_env: INDUS_YT_REFRESH_TOKEN
+    instagram:
+      enabled_env: INDUS_IG_ENABLED
+      user_id_env: INDUS_IG_USER_ID
+      access_token_env: INDUS_IG_ACCESS_TOKEN
+    x:
+      enabled_env: INDUS_X_ENABLED
+      handle_env: INDUS_X_HANDLE
+      api_key_env: INDUS_X_API_KEY
+      api_secret_env: INDUS_X_API_SECRET
+      access_token_env: INDUS_X_ACCESS_TOKEN
+      access_secret_env: INDUS_X_ACCESS_SECRET
