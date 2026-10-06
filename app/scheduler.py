@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from . import db, llm, policy
-from .config import Settings, load_accounts, load_voice, resolve_platform_config
+from .config import Settings, load_accounts, load_voice
 from .platforms.base import PlatformClient
 from .platforms.instagram import InstagramClient
 from .platforms.x_twitter import XClient
@@ -79,45 +80,55 @@ runtime = BotRuntime()
 
 
 def build_clients(settings: Settings) -> dict[str, dict[str, PlatformClient]]:
-    """Returns {account_slug: {platform_name: client}} for every enabled combo."""
-    accounts = load_accounts()
+    """Returns {account_slug: {platform_name: client}} for every connected combo.
+    Per-account tokens come from Supabase (db.platform_connections, populated by
+    the dashboard's /connections OAuth flow); the app-level OAuth client id/secret
+    for each platform comes from Settings — one Google/Meta/X app serves every
+    connected account."""
     clients: dict[str, dict[str, PlatformClient]] = {}
-    for slug, account_cfg in accounts.items():
-        per_account: dict[str, PlatformClient] = {}
+    for conn in db.list_connections():
+        slug, platform = conn["account_slug"], conn["platform"]
+        per_account = clients.setdefault(slug, {})
 
-        yt_cfg = resolve_platform_config(account_cfg, "youtube")
-        if yt_cfg:
+        if platform == "youtube":
             per_account["youtube"] = YouTubeClient(
-                channel_id=yt_cfg["channel_id"],
-                client_id=yt_cfg["client_id"],
-                client_secret=yt_cfg["client_secret"],
-                refresh_token=yt_cfg["refresh_token"],
+                channel_id=conn["external_id"],
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+                refresh_token=conn["refresh_token"],
             )
-
-        ig_cfg = resolve_platform_config(account_cfg, "instagram")
-        if ig_cfg:
+        elif platform == "instagram":
             per_account["instagram"] = InstagramClient(
-                user_id=ig_cfg["user_id"],
-                access_token=ig_cfg["access_token"],
+                user_id=conn["external_id"],
+                access_token=conn["access_token"],
             )
-
-        x_cfg = resolve_platform_config(account_cfg, "x")
-        if x_cfg:
+        elif platform == "x":
             per_account["x"] = XClient(
-                handle=x_cfg["handle"],
-                api_key=x_cfg["api_key"],
-                api_secret=x_cfg["api_secret"],
-                access_token=x_cfg["access_token"],
-                access_secret=x_cfg["access_secret"],
+                handle=conn["handle"] or "",
+                api_key=settings.x_api_key,
+                api_secret=settings.x_api_secret,
+                access_token=conn["access_token"],
+                access_secret=conn["refresh_token"],  # OAuth1 access-token secret, stored in this column
             )
-
-        if per_account:
-            clients[slug] = per_account
 
     return clients
 
 
-def process_one_comment(account_slug: str, account_cfg: dict, platform: str, client: PlatformClient, comment, settings: Settings, voice: str) -> None:
+def _classify(account_slug: str, account_cfg: dict, comment_text: str, settings: Settings, voice: str) -> llm.LLMResult:
+    """Shared LLM call site: always feeds in the account's auto-learned examples
+    (Part 4) alongside the static voice guide."""
+    learned = [dict(r) for r in db.list_learned_examples(account_slug)]
+    return llm.classify_and_draft(
+        comment_text=comment_text,
+        account_cfg=account_cfg,
+        voice=voice,
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_model,
+        learned_examples=learned,
+    )
+
+
+def process_one_comment(account_slug: str, account_cfg: dict, platform: str, client: PlatformClient, comment, settings: Settings, voice: str, channel: str = "comment") -> None:
     if db.has_seen(platform, account_slug, comment.comment_id):
         return
 
@@ -137,6 +148,7 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
     base_fields = dict(
         platform=platform,
         account_slug=account_slug,
+        channel=channel,
         comment_id=comment.comment_id,
         post_id=comment.post_id,
         author=comment.author,
@@ -149,17 +161,29 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
         return
 
     if result.decision == "hold":
+        automations = db.get_automations(account_slug)
+        if automations["auto_hide_spam"] and "hold" in result.reason and hasattr(client, "hide_comment"):
+            try:
+                client.hide_comment(comment)
+                db.insert_comment(**base_fields, status="ignored", reason=f"auto-hidden ({result.reason})")
+                return
+            except Exception:  # noqa: BLE001 - fall through to a normal hold if hiding fails
+                log.exception("auto_hide_spam failed for comment %s", comment.comment_id)
         db.insert_comment(**base_fields, status="held", reason=result.reason)
         return
 
+    if db.get_automations(account_slug)["instant_faq_reply"]:
+        faq_answer = policy.match_faq(comment.text, account_cfg.get("faq", []))
+        if faq_answer:
+            send_at = policy.scheduled_send_at(comment.created_at)
+            db.insert_comment(
+                **base_fields, status="queued", category="faq_instant", sentiment="question",
+                draft_reply=faq_answer, draft_variants=json.dumps([faq_answer]), scheduled_send_at=send_at,
+            )
+            return
+
     try:
-        llm_result = llm.classify_and_draft(
-            comment_text=comment.text,
-            account_cfg=account_cfg,
-            voice=voice,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-        )
+        llm_result = _classify(account_slug, account_cfg, comment.text, settings, voice)
     except Exception as exc:  # noqa: BLE001 - network/LLM failure must not crash the poller
         # Distinct from "held": this is a technical failure, not a policy decision,
         # so it belongs on the Failed page with a Retry button, not the Held page.
@@ -168,7 +192,10 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
         return
 
     if llm_result.action == "skip":
-        db.insert_comment(**base_fields, status="ignored", reason=f"skipped ({llm_result.category})", category=llm_result.category)
+        db.insert_comment(
+            **base_fields, status="ignored", reason=f"skipped ({llm_result.category})",
+            category=llm_result.category, sentiment=llm_result.sentiment,
+        )
         return
 
     send_at = policy.scheduled_send_at(comment.created_at)
@@ -176,7 +203,9 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
         **base_fields,
         status="queued",
         category=llm_result.category,
+        sentiment=llm_result.sentiment,
         draft_reply=llm_result.reply_text,
+        draft_variants=json.dumps(llm_result.reply_variants),
         scheduled_send_at=send_at,
     )
 
@@ -186,13 +215,7 @@ def retry_failed_comment(row, account_cfg: dict, settings: Settings, voice: str)
     outage clears). Leaves it 'failed' again (with the new error) if it still
     doesn't work."""
     try:
-        llm_result = llm.classify_and_draft(
-            comment_text=row["text"],
-            account_cfg=account_cfg,
-            voice=voice,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-        )
+        llm_result = _classify(row["account_slug"], account_cfg, row["text"], settings, voice)
     except Exception as exc:  # noqa: BLE001
         log.exception("Retry failed again for comment row %s", row["id"])
         db.update_comment(row["id"], reason=f"LLM error (retry): {exc}")
@@ -201,14 +224,15 @@ def retry_failed_comment(row, account_cfg: dict, settings: Settings, voice: str)
     if llm_result.action == "skip":
         db.update_comment(
             row["id"], status="ignored", reason=f"skipped on retry ({llm_result.category})",
-            category=llm_result.category,
+            category=llm_result.category, sentiment=llm_result.sentiment,
         )
         return
 
     send_at = policy.scheduled_send_at(row["comment_created_at"])
     db.update_comment(
-        row["id"], status="queued", category=llm_result.category,
-        draft_reply=llm_result.reply_text, scheduled_send_at=send_at, reason=None,
+        row["id"], status="queued", category=llm_result.category, sentiment=llm_result.sentiment,
+        draft_reply=llm_result.reply_text, draft_variants=json.dumps(llm_result.reply_variants),
+        scheduled_send_at=send_at, reason=None,
     )
 
 
@@ -217,13 +241,7 @@ def draft_anyway_for_held(row, account_cfg: dict, settings: Settings, voice: str
     daily cap) and wants a draft produced despite the hold. Still lands in the
     normal review queue — this does not bypass Approve."""
     try:
-        llm_result = llm.classify_and_draft(
-            comment_text=row["text"],
-            account_cfg=account_cfg,
-            voice=voice,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-        )
+        llm_result = _classify(row["account_slug"], account_cfg, row["text"], settings, voice)
     except Exception as exc:  # noqa: BLE001
         log.exception("Manual draft-anyway failed for comment row %s", row["id"])
         db.update_comment(row["id"], status="failed", reason=f"LLM error: {exc}")
@@ -233,14 +251,15 @@ def draft_anyway_for_held(row, account_cfg: dict, settings: Settings, voice: str
         db.update_comment(
             row["id"], status="ignored",
             reason=f"skipped after manual override ({llm_result.category})",
-            category=llm_result.category,
+            category=llm_result.category, sentiment=llm_result.sentiment,
         )
         return
 
     send_at = policy.scheduled_send_at(row["comment_created_at"])
     db.update_comment(
-        row["id"], status="queued", category=llm_result.category,
-        draft_reply=llm_result.reply_text, scheduled_send_at=send_at, reason=None,
+        row["id"], status="queued", category=llm_result.category, sentiment=llm_result.sentiment,
+        draft_reply=llm_result.reply_text, draft_variants=json.dumps(llm_result.reply_variants),
+        scheduled_send_at=send_at, reason=None,
     )
 
 
@@ -264,7 +283,10 @@ def resend_failed_comment(row, clients: dict[str, dict[str, PlatformClient]]) ->
         author_id="", text=row["text"], created_at=row["comment_created_at"],
     )
     try:
-        client.post_reply(comment, row["draft_reply"])
+        if row["channel"] == "dm":
+            client.reply_dm(comment, row["draft_reply"])
+        else:
+            client.post_reply(comment, row["draft_reply"])
         db.update_comment(row["id"], status="sent", sent_at=db.now_iso(), reason=None)
         db.increment_today_count(row["account_slug"], row["platform"])
     except Exception as exc:  # noqa: BLE001
@@ -302,6 +324,21 @@ async def poll_loop(settings: Settings, stop_event: asyncio.Event, runtime: "Bot
                             process_one_comment(slug, account_cfg, platform, client, comment, settings, voice)
                         except Exception:  # noqa: BLE001
                             log.exception("Failed processing comment %s on %s/%s", comment.comment_id, slug, platform)
+
+                    # Part 5: DM support (Instagram only for now — see fetch_new_dms docstring).
+                    if hasattr(client, "fetch_new_dms"):
+                        try:
+                            dms = client.fetch_new_dms()
+                        except Exception as exc:  # noqa: BLE001
+                            log.exception("fetch_new_dms failed for %s/%s", slug, platform)
+                            if runtime is not None:
+                                runtime.last_poll_error = f"{slug}/{platform} DM fetch error: {exc}"
+                            dms = []
+                        for dm in dms:
+                            try:
+                                process_one_comment(slug, account_cfg, platform, client, dm, settings, voice, channel="dm")
+                            except Exception:  # noqa: BLE001
+                                log.exception("Failed processing DM %s on %s/%s", dm.comment_id, slug, platform)
         finally:
             if runtime is not None:
                 runtime.poll_cycles += 1
@@ -320,8 +357,18 @@ async def sender_loop(settings: Settings, stop_event: asyncio.Event) -> None:
 
     while not stop_event.is_set():
         if settings.auto_mode:
+            from datetime import datetime, timezone as _tz
+
+            is_weekend = datetime.now(_tz.utc).weekday() >= 5  # Sat=5, Sun=6
+
             due = db.list_due_queue(db.now_iso())
             for row in due:
+                automations = db.get_automations(row["account_slug"])
+                if automations["weekend_review_mode"] and is_weekend:
+                    continue  # leave it queued for manual review this weekend
+                if automations["notify_only_bug_reports"] and row["category"] == "bug_report":
+                    continue  # always wants a human on bug reports, even in auto mode
+
                 per_account = clients.get(row["account_slug"], {})
                 client = per_account.get(row["platform"])
                 if not client:
@@ -337,9 +384,13 @@ async def sender_loop(settings: Settings, stop_event: asyncio.Event) -> None:
                         text=row["text"],
                         created_at=row["comment_created_at"],
                     )
-                    client.post_reply(comment, row["draft_reply"])
+                    if row["channel"] == "dm":
+                        client.reply_dm(comment, row["draft_reply"])
+                    else:
+                        client.post_reply(comment, row["draft_reply"])
                     db.update_comment(row["id"], status="sent", sent_at=db.now_iso())
                     db.increment_today_count(row["account_slug"], row["platform"])
+                    db.add_learned_example(row["account_slug"], row["text"], row["draft_reply"])
                 except Exception as exc:  # noqa: BLE001
                     log.exception("Failed to send reply for comment row %s", row["id"])
                     db.update_comment(row["id"], status="failed", reason=f"send error: {exc}")

@@ -13,13 +13,6 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return val.strip().lower() in ("1", "true", "yes", "on")
-
-
 @dataclass
 class Settings:
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
@@ -30,6 +23,17 @@ class Settings:
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     poll_interval_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_INTERVAL_SECONDS", "90")))
     daily_reply_cap: int = field(default_factory=lambda: int(os.getenv("DAILY_REPLY_CAP", "150")))
+
+    # One OAuth app per platform, shared across every connected account — the
+    # per-account tokens produced by clicking "Connect" live in Supabase instead
+    # (app/db.py: platform_connections), not here.
+    public_base_url: str = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL", "").rstrip("/"))
+    google_oauth_client_id: str = field(default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""))
+    google_oauth_client_secret: str = field(default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""))
+    meta_app_id: str = field(default_factory=lambda: os.getenv("META_APP_ID", ""))
+    meta_app_secret: str = field(default_factory=lambda: os.getenv("META_APP_SECRET", ""))
+    x_api_key: str = field(default_factory=lambda: os.getenv("X_API_KEY", ""))
+    x_api_secret: str = field(default_factory=lambda: os.getenv("X_API_SECRET", ""))
 
     @property
     def auto_mode(self) -> bool:
@@ -47,23 +51,6 @@ def load_voice() -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
-
-
-def resolve_platform_config(account_cfg: dict, platform: str) -> dict | None:
-    """Turn the *_env references in accounts.yaml into real values from the
-    environment. Returns None if the platform is disabled or missing creds."""
-    plat_cfg = account_cfg.get("platforms", {}).get(platform)
-    if not plat_cfg:
-        return None
-    resolved = {}
-    for key, env_name in plat_cfg.items():
-        if key == "enabled_env":
-            resolved["enabled"] = _env_bool(env_name, False)
-        else:
-            resolved[key.removesuffix("_env")] = os.getenv(env_name, "")
-    if not resolved.get("enabled"):
-        return None
-    return resolved
 
 
 settings = Settings()

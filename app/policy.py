@@ -87,3 +87,22 @@ def scheduled_send_at(comment_created_at: str) -> str:
     if send_at > hard_ceiling:
         send_at = hard_ceiling
     return send_at.isoformat()
+
+
+def match_faq(comment_text: str, faq: list[dict], threshold: float = 0.6) -> str | None:
+    """Fuzzy-matches a comment against accounts.yaml's faq list (list of {q, a}).
+    Used by the instant_faq_reply automation to skip the LLM entirely for clear-cut
+    FAQ questions. Deliberately simple (difflib, no embeddings) — a near-miss just
+    falls through to the normal LLM path, which is a safe default either way."""
+    import difflib
+
+    text = comment_text.lower().strip()
+    best_ratio = 0.0
+    best_answer = None
+    for item in faq:
+        question = item.get("q", "").lower().strip()
+        ratio = difflib.SequenceMatcher(None, text, question).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_answer = item.get("a")
+    return best_answer if best_ratio >= threshold else None

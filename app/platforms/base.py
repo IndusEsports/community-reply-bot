@@ -28,3 +28,9 @@ class PlatformClient(Protocol):
 
     def is_own_comment(self, comment: Comment) -> bool:
         ...
+
+    # Optional — not every client implements these (checked with hasattr() before
+    # use). hide_comment: moderate/hide someone else's comment (YouTube, Instagram
+    # only — X has no such concept). delete_comment: remove a comment outright
+    # (X only ever permits deleting the bot's own posted replies, not others').
+    # fetch_new_dms/reply_dm: direct-message support (Instagram only for now).

@@ -52,3 +52,9 @@ class XClient:
 
     def is_own_comment(self, comment: Comment) -> bool:
         return comment.author_id == self._own_id()
+
+    def delete_comment(self, comment: Comment) -> None:
+        """X has no 'hide' concept for other users' replies, and the API only
+        allows deleting tweets the authenticated user posted — so this can only
+        ever be used on the bot's own replies, not on other people's comments."""
+        self._client.delete_tweet(comment.comment_id)

@@ -38,12 +38,40 @@ CREATE TABLE IF NOT EXISTS startup_markers (
     PRIMARY KEY (account_slug, platform)
 );
 
+CREATE TABLE IF NOT EXISTS platform_connections (
+    account_slug TEXT NOT NULL, platform TEXT NOT NULL,
+    access_token TEXT, refresh_token TEXT, external_id TEXT, handle TEXT, extra TEXT,
+    connected_at TEXT NOT NULL, expires_at TEXT,
+    PRIMARY KEY (account_slug, platform)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_pending (
+    state TEXT PRIMARY KEY, platform TEXT NOT NULL, account_slug TEXT NOT NULL,
+    extra TEXT, created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learned_examples (
+    id SERIAL PRIMARY KEY, account_slug TEXT NOT NULL,
+    comment_text TEXT NOT NULL, reply_text TEXT NOT NULL, created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automations (
+    account_slug TEXT NOT NULL, key TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_slug, key)
+);
+
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'comment';
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS sentiment TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS draft_variants TEXT;
+
 -- 2) A login scoped to just these tables. CHANGE THE PASSWORD below before running.
 CREATE ROLE reply_bot WITH LOGIN PASSWORD 'change-this-to-a-strong-password';
 
 GRANT USAGE ON SCHEMA public TO reply_bot;
 GRANT SELECT, INSERT, UPDATE ON comments, daily_counts, startup_markers TO reply_bot;
+GRANT SELECT, INSERT, UPDATE, DELETE ON platform_connections, oauth_pending, learned_examples, automations TO reply_bot;
 GRANT USAGE, SELECT ON SEQUENCE comments_id_seq TO reply_bot;
+GRANT USAGE, SELECT ON SEQUENCE learned_examples_id_seq TO reply_bot;
 
 -- No DELETE, no CREATE, no access to any other table in this database.
 
@@ -51,18 +79,16 @@ GRANT USAGE, SELECT ON SEQUENCE comments_id_seq TO reply_bot;
 --    silently exposed through its public REST API). With RLS on and no policy,
 --    EVERY non-owner role — including reply_bot above — gets blocked from all
 --    access, so it needs its own explicit policy here.
-ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE daily_counts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE startup_markers ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS reply_bot_access ON comments;
-CREATE POLICY reply_bot_access ON comments FOR ALL TO reply_bot USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS reply_bot_access ON daily_counts;
-CREATE POLICY reply_bot_access ON daily_counts FOR ALL TO reply_bot USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS reply_bot_access ON startup_markers;
-CREATE POLICY reply_bot_access ON startup_markers FOR ALL TO reply_bot USING (true) WITH CHECK (true);
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['comments','daily_counts','startup_markers','platform_connections','oauth_pending','learned_examples','automations']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS reply_bot_access ON %I', t);
+    EXECUTE format('CREATE POLICY reply_bot_access ON %I FOR ALL TO reply_bot USING (true) WITH CHECK (true)', t);
+  END LOOP;
+END $$;
 
 -- Note: these policies say "FOR ALL", but the GRANTs above already limit
 -- reply_bot to SELECT/INSERT/UPDATE — DELETE is still refused at the grant

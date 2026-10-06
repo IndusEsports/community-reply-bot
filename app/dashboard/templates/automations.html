@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Automations{% endblock %}
+{% block content %}
+  <p class="hint">A handful of real, honest automations — not a claim of "100+". Off by
+  default; flip on what you actually want.</p>
+
+  {% set ns = namespace(last_slug=None) %}
+  {% for row in rows %}
+    {% if row.slug != ns.last_slug %}
+      {% if not loop.first %}</div>{% endif %}
+      <h3>{{ row.display_name }}</h3>
+      <div class="card">
+      {% set ns.last_slug = row.slug %}
+    {% endif %}
+    <div class="toggle-row">
+      <div>
+        <div>{{ row.label }}</div>
+        <div class="toggle-desc">{{ row.desc }}</div>
+      </div>
+      <form method="post" action="/api/automations/{{ row.slug }}/{{ row.key }}/toggle">
+        <button type="submit" class="{{ 'approve' if row.enabled else 'reject' }}">
+          {{ 'On' if row.enabled else 'Off' }}
+        </button>
+      </form>
+    </div>
+    {% if loop.last %}</div>{% endif %}
+  {% endfor %}
+{% endblock %}

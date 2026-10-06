@@ -7,3 +7,4 @@ venv/
 *.db-journal
 /data/
 .DS_Store
+boot.log

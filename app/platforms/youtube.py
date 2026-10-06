@@ -87,3 +87,22 @@ class YouTubeClient:
 
     def is_own_comment(self, comment: Comment) -> bool:
         return comment.author_id == self.channel_id
+
+    def hide_comment(self, comment: Comment) -> None:
+        """Moderates the comment to 'rejected', which hides it from public view."""
+        resp = requests.post(
+            f"{API_BASE}/comments/setModerationStatus",
+            headers=self._headers(),
+            params={"id": comment.comment_id, "moderationStatus": "rejected"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+
+    def delete_comment(self, comment: Comment) -> None:
+        resp = requests.delete(
+            f"{API_BASE}/comments",
+            headers=self._headers(),
+            params={"id": comment.comment_id},
+            timeout=20,
+        )
+        resp.raise_for_status()

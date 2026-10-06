@@ -2,6 +2,8 @@
 and replies. Needs instagram_business_basic + instagram_business_manage_comments."""
 from __future__ import annotations
 
+import json
+
 import requests
 
 from .base import Comment
@@ -58,3 +60,57 @@ class InstagramClient:
 
     def is_own_comment(self, comment: Comment) -> bool:
         return comment.author_id == self.user_id
+
+    def hide_comment(self, comment: Comment) -> None:
+        resp = requests.post(
+            f"{API_BASE}/{comment.comment_id}",
+            data={"hide": "true", "access_token": self.access_token},
+            timeout=20,
+        )
+        resp.raise_for_status()
+
+    def delete_comment(self, comment: Comment) -> None:
+        resp = requests.delete(
+            f"{API_BASE}/{comment.comment_id}",
+            params={"access_token": self.access_token},
+            timeout=20,
+        )
+        resp.raise_for_status()
+
+    def fetch_new_dms(self) -> list[Comment]:
+        """Instagram Messaging API — requires instagram_business_manage_messages."""
+        resp = requests.get(
+            f"{API_BASE}/{self.user_id}/conversations",
+            params={"fields": "messages{id,from,to,message,created_time}", "access_token": self.access_token},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        out: list[Comment] = []
+        for convo in resp.json().get("data", []):
+            for msg in convo.get("messages", {}).get("data", []):
+                sender = msg.get("from", {})
+                if sender.get("id") == self.user_id:
+                    continue  # our own sent message
+                out.append(
+                    Comment(
+                        comment_id=msg["id"],
+                        post_id=convo.get("id", ""),
+                        author=sender.get("username", ""),
+                        author_id=sender.get("id", ""),
+                        text=msg.get("message", ""),
+                        created_at=msg.get("created_time", ""),
+                    )
+                )
+        return out
+
+    def reply_dm(self, comment: Comment, reply_text: str) -> None:
+        resp = requests.post(
+            f"{API_BASE}/{self.user_id}/messages",
+            data={
+                "recipient": json.dumps({"id": comment.author_id}),
+                "message": json.dumps({"text": reply_text}),
+                "access_token": self.access_token,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()

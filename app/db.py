@@ -29,13 +29,16 @@ CREATE TABLE IF NOT EXISTS comments (
     account_slug TEXT NOT NULL,
     comment_id TEXT NOT NULL,
     post_id TEXT,
+    channel TEXT NOT NULL DEFAULT 'comment',  -- 'comment' | 'dm'
     author TEXT,
     text TEXT NOT NULL,
     comment_created_at TEXT NOT NULL,
     status TEXT NOT NULL,              -- ignored | held | failed | queued | sent | rejected
     reason TEXT,                       -- why it was skipped/held
     category TEXT,                     -- llm classification label
-    draft_reply TEXT,
+    sentiment TEXT,                    -- llm sentiment/intent tag
+    draft_reply TEXT,                  -- the variant that will actually be sent
+    draft_variants TEXT,               -- JSON list of up to 3 drafted options
     scheduled_send_at TEXT,
     sent_at TEXT,
     discovered_at TEXT NOT NULL,
@@ -56,6 +59,42 @@ CREATE TABLE IF NOT EXISTS startup_markers (
     started_at TEXT NOT NULL,
     PRIMARY KEY (account_slug, platform)
 );
+
+CREATE TABLE IF NOT EXISTS platform_connections (
+    account_slug TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    external_id TEXT,                  -- channel id / IG user id / X user id
+    handle TEXT,                       -- display handle, for the Connections page
+    extra TEXT,                        -- JSON blob for anything platform-specific
+    connected_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY (account_slug, platform)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_pending (
+    state TEXT PRIMARY KEY,            -- random token embedded in the OAuth redirect
+    platform TEXT NOT NULL,
+    account_slug TEXT NOT NULL,
+    extra TEXT,                        -- e.g. X's oauth_token_secret between the two hops
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learned_examples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_slug TEXT NOT NULL,
+    comment_text TEXT NOT NULL,
+    reply_text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automations (
+    account_slug TEXT NOT NULL,
+    key TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_slug, key)
+);
 """
 
 _SCHEMA_POSTGRES = """
@@ -65,13 +104,16 @@ CREATE TABLE IF NOT EXISTS comments (
     account_slug TEXT NOT NULL,
     comment_id TEXT NOT NULL,
     post_id TEXT,
+    channel TEXT NOT NULL DEFAULT 'comment',
     author TEXT,
     text TEXT NOT NULL,
     comment_created_at TEXT NOT NULL,
     status TEXT NOT NULL,
     reason TEXT,
     category TEXT,
+    sentiment TEXT,
     draft_reply TEXT,
+    draft_variants TEXT,
     scheduled_send_at TEXT,
     sent_at TEXT,
     discovered_at TEXT NOT NULL,
@@ -91,6 +133,42 @@ CREATE TABLE IF NOT EXISTS startup_markers (
     platform TEXT NOT NULL,
     started_at TEXT NOT NULL,
     PRIMARY KEY (account_slug, platform)
+);
+
+CREATE TABLE IF NOT EXISTS platform_connections (
+    account_slug TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    external_id TEXT,
+    handle TEXT,
+    extra TEXT,
+    connected_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY (account_slug, platform)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_pending (
+    state TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    account_slug TEXT NOT NULL,
+    extra TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learned_examples (
+    id SERIAL PRIMARY KEY,
+    account_slug TEXT NOT NULL,
+    comment_text TEXT NOT NULL,
+    reply_text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automations (
+    account_slug TEXT NOT NULL,
+    key TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_slug, key)
 );
 """
 
@@ -126,10 +204,15 @@ def init_db(db_path: str, database_url: str = "") -> None:
                 with _conn.cursor() as cur:
                     cur.execute(
                         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
-                        "AND tablename IN ('comments','daily_counts','startup_markers')"
+                        "AND tablename IN ('comments','daily_counts','startup_markers',"
+                        "'platform_connections','oauth_pending','learned_examples','automations')"
                     )
                     found = {row[0] for row in cur.fetchall()}
-                missing = {"comments", "daily_counts", "startup_markers"} - found
+                required = {
+                    "comments", "daily_counts", "startup_markers",
+                    "platform_connections", "oauth_pending", "learned_examples", "automations",
+                }
+                missing = required - found
                 if missing:
                     raise RuntimeError(
                         f"DATABASE_URL's role can't CREATE TABLE and these tables don't exist yet: "
@@ -329,4 +412,127 @@ def increment_today_count(account_slug: str, platform: str) -> None:
                    ON CONFLICT(account_slug, platform, day) DO UPDATE SET count = count + 1"""
             ),
             (account_slug, platform, day),
+        )
+
+
+def list_inbox(limit: int = 300) -> list:
+    """Unified feed: everything that needs (or recently needed) a human look —
+    queued, held, and failed — newest first. Backs the single /inbox page."""
+    with _cursor() as cur:
+        cur.execute(
+            _sql("SELECT * FROM comments WHERE status IN ('queued','held','failed') ORDER BY id DESC LIMIT ?"),
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+# --- platform_connections: per-account OAuth tokens, managed by the Connections page ---
+
+def upsert_connection(account_slug: str, platform: str, **fields) -> None:
+    fields.setdefault("connected_at", now_iso())
+    cols = ["account_slug", "platform"] + list(fields.keys())
+    values = [account_slug, platform] + list(fields.values())
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{k}=EXCLUDED.{k}" if _backend == "postgres" else f"{k}=excluded.{k}" for k in fields)
+    with _cursor() as cur:
+        cur.execute(
+            _sql(
+                f"INSERT INTO platform_connections ({', '.join(cols)}) VALUES ({placeholders}) "
+                f"ON CONFLICT(account_slug, platform) DO UPDATE SET {updates}"
+            ),
+            tuple(values),
+        )
+
+
+def get_connection(account_slug: str, platform: str):
+    with _cursor() as cur:
+        cur.execute(
+            _sql("SELECT * FROM platform_connections WHERE account_slug=? AND platform=?"),
+            (account_slug, platform),
+        )
+        return cur.fetchone()
+
+
+def list_connections() -> list:
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM platform_connections")
+        return cur.fetchall()
+
+
+def delete_connection(account_slug: str, platform: str) -> None:
+    with _cursor() as cur:
+        cur.execute(
+            _sql("DELETE FROM platform_connections WHERE account_slug=? AND platform=?"),
+            (account_slug, platform),
+        )
+
+
+# --- oauth_pending: short-lived state between an OAuth redirect and its callback ---
+
+def store_pending_oauth(state: str, platform: str, account_slug: str, extra: str | None = None) -> None:
+    with _cursor() as cur:
+        cur.execute(
+            _sql("INSERT INTO oauth_pending (state, platform, account_slug, extra, created_at) VALUES (?, ?, ?, ?, ?)"),
+            (state, platform, account_slug, extra, now_iso()),
+        )
+
+
+def pop_pending_oauth(state: str):
+    with _cursor() as cur:
+        cur.execute(_sql("SELECT * FROM oauth_pending WHERE state=?"), (state,))
+        row = cur.fetchone()
+        if row:
+            cur.execute(_sql("DELETE FROM oauth_pending WHERE state=?"), (state,))
+        return row
+
+
+# --- learned_examples: auto-growing voice examples from approved replies ---
+
+def add_learned_example(account_slug: str, comment_text: str, reply_text: str) -> None:
+    with _cursor() as cur:
+        cur.execute(
+            _sql(
+                "INSERT INTO learned_examples (account_slug, comment_text, reply_text, created_at) "
+                "VALUES (?, ?, ?, ?)"
+            ),
+            (account_slug, comment_text, reply_text, now_iso()),
+        )
+
+
+def list_learned_examples(account_slug: str, limit: int = 8) -> list:
+    """Most recent examples first; llm.py reverses this so the prompt reads oldest-first."""
+    with _cursor() as cur:
+        cur.execute(
+            _sql("SELECT * FROM learned_examples WHERE account_slug=? ORDER BY id DESC LIMIT ?"),
+            (account_slug, limit),
+        )
+        return cur.fetchall()
+
+
+# --- automations: per-account toggle switches ---
+
+_AUTOMATION_DEFAULTS = {
+    "auto_hide_spam": False,
+    "instant_faq_reply": False,
+    "notify_only_bug_reports": False,
+    "weekend_review_mode": False,
+}
+
+
+def get_automations(account_slug: str) -> dict[str, bool]:
+    with _cursor() as cur:
+        cur.execute(_sql("SELECT key, enabled FROM automations WHERE account_slug=?"), (account_slug,))
+        overrides = {row["key"]: bool(row["enabled"]) for row in cur.fetchall()}
+    return {**_AUTOMATION_DEFAULTS, **overrides}
+
+
+def set_automation(account_slug: str, key: str, enabled: bool) -> None:
+    with _cursor() as cur:
+        updates = "enabled=EXCLUDED.enabled" if _backend == "postgres" else "enabled=excluded.enabled"
+        cur.execute(
+            _sql(
+                f"INSERT INTO automations (account_slug, key, enabled) VALUES (?, ?, ?) "
+                f"ON CONFLICT(account_slug, key) DO UPDATE SET {updates}"
+            ),
+            (account_slug, key, int(enabled)),
         )

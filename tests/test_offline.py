@@ -152,13 +152,13 @@ class PolicyTests(unittest.TestCase):
 
 class LLMParsingTests(unittest.TestCase):
     def test_parses_clean_json(self):
-        raw = '{"action": "reply", "category": "positive", "reply_text": "thanks!"}'
+        raw = '{"action": "reply", "category": "positive", "reply_variants": ["thanks!"]}'
         result = llm._parse_json_response(raw)
         self.assertEqual(result.action, "reply")
         self.assertEqual(result.reply_text, "thanks!")
 
     def test_strips_markdown_fences(self):
-        raw = '```json\n{"action": "skip", "category": "angry", "reply_text": null}\n```'
+        raw = '```json\n{"action": "skip", "category": "angry", "reply_variants": []}\n```'
         result = llm._parse_json_response(raw)
         self.assertEqual(result.action, "skip")
 
@@ -189,7 +189,7 @@ class PipelineTests(unittest.TestCase):
             comment_id="c1", post_id="p1", author="troll", author_id="troll_id",
             text="this game is trash uninstalling", created_at=iso(datetime.now(timezone.utc)),
         )
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"skip","category":"angry","reply_text":null}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"skip","category":"angry","reply_variants":[]}'):
             scheduler.process_one_comment("testgame", ACCOUNT_CFG, "fake", client, comment, self._settings(), "be nice")
 
         rows = db.list_history()
@@ -202,7 +202,7 @@ class PipelineTests(unittest.TestCase):
             comment_id="c2", post_id="p1", author="fan", author_id="fan_id",
             text="loved this update!", created_at=iso(datetime.now(timezone.utc)),
         )
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_text":"glad you liked it!"}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_variants":["glad you liked it!"]}'):
             scheduler.process_one_comment("testgame", ACCOUNT_CFG, "fake", client, comment, self._settings(), "be nice")
 
         queue = db.list_queue()
@@ -226,7 +226,7 @@ class PipelineTests(unittest.TestCase):
             comment_id="c4", post_id="p1", author="fan", author_id="fan_id",
             text="nice game", created_at=iso(datetime.now(timezone.utc)),
         )
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_text":"thanks!"}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_variants":["thanks!"]}'):
             scheduler.process_one_comment("testgame", ACCOUNT_CFG, "fake", client, comment, self._settings(), "be nice")
             scheduler.process_one_comment("testgame", ACCOUNT_CFG, "fake", client, comment, self._settings(), "be nice")
         self.assertEqual(len(db.list_queue()), 1)
@@ -302,7 +302,7 @@ class RecoveryActionTests(unittest.TestCase):
 
     def test_draft_anyway_queues_a_reply(self):
         row = self._insert_held()
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_text":"thanks!"}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_variants":["thanks!"]}'):
             scheduler.draft_anyway_for_held(row, ACCOUNT_CFG, self._settings(), "be nice")
         queue = db.list_queue()
         self.assertEqual(len(queue), 1)
@@ -311,7 +311,7 @@ class RecoveryActionTests(unittest.TestCase):
 
     def test_draft_anyway_can_still_skip(self):
         row = self._insert_held()
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"skip","category":"spam","reply_text":null}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"skip","category":"spam","reply_variants":[]}'):
             scheduler.draft_anyway_for_held(row, ACCOUNT_CFG, self._settings(), "be nice")
         self.assertFalse(db.list_queue())
         self.assertEqual(len(db.list_ignored()), 1)
@@ -324,7 +324,7 @@ class RecoveryActionTests(unittest.TestCase):
 
     def test_retry_failed_without_draft_reruns_llm(self):
         row = self._insert_failed()
-        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_text":"hi!"}'):
+        with mock.patch("app.llm._call_gemini", return_value='{"action":"reply","category":"positive","reply_variants":["hi!"]}'):
             scheduler.retry_failed_comment(row, ACCOUNT_CFG, self._settings(), "be nice")
         queue = db.list_queue()
         self.assertEqual(len(queue), 1)

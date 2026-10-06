@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Inbox{% endblock %}
+{% block content %}
+  {% set status = bot_status() %}
+  <p class="mode-banner mode-{{ status.mode }}">
+    Mode: <strong>{{ status.mode }}</strong>
+    {% if status.mode == "review" %}— every reply below waits for you to Approve.{% else %}— auto mode is on, due replies send on their own.{% endif %}
+  </p>
+
+  <div class="stats-row">
+    <div class="stat-tile"><span class="stat-n">{{ counts.get('queued', 0) }}</span><span class="stat-label">needs review</span></div>
+    <div class="stat-tile"><span class="stat-n">{{ counts.get('held', 0) }}</span><span class="stat-label">held</span></div>
+    <div class="stat-tile"><span class="stat-n">{{ counts.get('failed', 0) }}</span><span class="stat-label">failed</span></div>
+    <div class="stat-tile"><span class="stat-n">{{ counts.get('ignored', 0) }}</span><span class="stat-label">ignored</span></div>
+    <div class="stat-tile"><span class="stat-n">{{ counts.get('sent', 0) }}</span><span class="stat-label">sent (all-time)</span></div>
+  </div>
+
+  {% if cap_usage %}
+    <div class="cap-row">
+      {% for u in cap_usage %}
+        <span class="cap-pill">{{ u.slug }}/{{ u.platform }}: {{ u.used }}/{{ u.cap }} today</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="inbox-tabs">
+    <a href="/?status=all" class="{{ 'active' if active_status == 'all' }}">All</a>
+    <a href="/?status=queued" class="{{ 'active' if active_status == 'queued' }}">Needs Review</a>
+    <a href="/?status=held" class="{{ 'active' if active_status == 'held' }}">Held</a>
+    <a href="/?status=failed" class="{{ 'active' if active_status == 'failed' }}">Failed</a>
+  </div>
+
+  {% if rows|length == 0 %}
+    <p class="empty">Nothing here right now.</p>
+  {% else %}
+    <div class="card-list">
+      {% for row in rows %}
+        <div class="card">
+          <div class="card-meta">
+            <span class="platform-badge">{{ row.platform }}</span>
+            <span>{{ row.account_slug }}</span>
+            <span>by {{ row.author }}</span>
+            {% if row.sentiment %}<span class="sentiment-badge">{{ row.sentiment }}</span>{% endif %}
+            {% if row.category %}<span>category: {{ row.category }}</span>{% endif %}
+            {% if row.status == 'queued' %}<span>sends at {{ row.scheduled_send_at }}</span>{% endif %}
+            {% if row.reason %}<span class="status-error">{{ row.reason }}</span>{% endif %}
+          </div>
+          <p class="comment-text">"{{ row.text }}"</p>
+
+          {% if row.status == 'queued' %}
+            <form method="post" action="/api/approve/{{ row.id }}">
+              {% if row.variants and row.variants|length > 1 %}
+                {% for v in row.variants %}
+                  <label class="variant-option">
+                    <input type="radio" name="variant_index" value="{{ loop.index0 }}" {% if loop.first %}checked{% endif %} />
+                    {{ v }}
+                  </label>
+                {% endfor %}
+              {% else %}
+                <p class="draft-text">{{ row.draft_reply }}</p>
+                <input type="hidden" name="variant_index" value="0" />
+              {% endif %}
+              <button type="submit" class="approve">Approve</button>
+              <button type="submit" formaction="/api/reject/{{ row.id }}" class="reject">Reject</button>
+            </form>
+          {% elif row.status == 'held' %}
+            <form method="post" action="/api/held/{{ row.id }}/draft-anyway" style="display:inline">
+              <button type="submit" class="approve">Draft reply anyway</button>
+            </form>
+            <form method="post" action="/api/held/{{ row.id }}/dismiss" style="display:inline">
+              <button type="submit" class="reject">Dismiss</button>
+            </form>
+          {% elif row.status == 'failed' %}
+            {% if row.draft_reply %}<p class="draft-text">{{ row.draft_reply }}</p>{% endif %}
+            <form method="post" action="/api/failed/{{ row.id }}/retry" style="display:inline">
+              <button type="submit" class="approve">Retry</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

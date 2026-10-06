@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Connections{% endblock %}
+{% block content %}
+  <p class="hint">Connect each game's social accounts here — no more pasting tokens into
+  .env. YouTube/Instagram/X each need a one-time OAuth app set up in their own developer
+  console first (see README); once that's done, every account connects with one click.</p>
+
+  <div class="card-list">
+    {% for row in rows %}
+      <div class="card">
+        <div class="card-meta">
+          <span class="platform-badge">{{ row.platform }}</span>
+          <span>{{ row.display_name }}</span>
+          {% if row.connection %}
+            <span class="status-up-text">connected{% if row.connection.handle %} as @{{ row.connection.handle }}{% endif %}</span>
+            <span>since {{ row.connection.connected_at }}</span>
+          {% else %}
+            <span class="status-error">not connected</span>
+          {% endif %}
+        </div>
+        {% if row.connection %}
+          <form method="post" action="/connections/{{ row.platform }}/disconnect" style="display:inline">
+            <input type="hidden" name="account" value="{{ row.slug }}" />
+            <button type="submit" class="reject">Disconnect</button>
+          </form>
+        {% else %}
+          <a href="/connections/{{ row.platform }}/start?account={{ row.slug }}">
+            <button type="button" class="approve">Connect</button>
+          </a>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}
