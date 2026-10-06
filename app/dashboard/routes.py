@@ -13,17 +13,20 @@ from ..scheduler import build_clients
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/dashboard/templates")
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
 
 # Exposed as a callable in every template (base.html's nav/status strip) so
 # individual routes don't each have to thread runtime status through context.
 templates.env.globals["bot_status"] = lambda: {**scheduler.runtime.status(), "mode": settings.bot_mode}
 
 
-def require_login(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+def require_login(credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
     # Username can be anything; only the password is checked (matches README step 7).
-    correct = secrets.compare_digest(credentials.password, settings.dashboard_password)
-    if not correct:
+    # If DASHBOARD_PASSWORD is blank, login is skipped entirely — no prompt, no check.
+    # Anyone with the URL gets straight in. Only do this if you know what that means.
+    if not settings.dashboard_password:
+        return "anonymous"
+    if credentials is None or not secrets.compare_digest(credentials.password, settings.dashboard_password):
         raise HTTPException(status_code=401, detail="Wrong password", headers={"WWW-Authenticate": "Basic"})
     return credentials.username
 
