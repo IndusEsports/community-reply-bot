@@ -1,6 +1,7 @@
 {% extends "base.html" %}
-{% block title %}History{% endblock %}
+{% block title %}Activity Log{% endblock %}
 {% block content %}
+  <h1 class="page-title">Activity Log</h1>
   {% if rows|length == 0 %}
     <p class="empty">No history yet.</p>
   {% else %}

@@ -21,3 +21,8 @@ indus:
       a: "Post it in the #bug-reports channel on our Discord with your device and what happened."
     - q: "Is this on mobile / console?"
       a: "Currently Showdown is playable on Roblox, which supports PC, mobile, and console."
+  # Optional, used by the "VIP priority review" automation (off by default) —
+  # authors in this list always get held for manual review, never auto-sent.
+  # vip_authors:
+  #   - "SomeModName"
+  #   - "PartnerCreatorHandle"

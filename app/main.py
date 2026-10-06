@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import db, scheduler
+from . import auth, db, scheduler
 from .config import settings
 from .dashboard.routes import router as dashboard_router
 
@@ -17,6 +17,7 @@ log = logging.getLogger("reply_bot.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db(settings.db_path, settings.database_url)
+    auth.ensure_bootstrap_admin()
     log.info(
         "BOT_MODE=%s, db=%s",
         settings.bot_mode,

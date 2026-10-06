@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Inbox{% endblock %}
 {% block content %}
+  <h1 class="page-title">Inbox</h1>
   {% set status = bot_status() %}
   <p class="mode-banner mode-{{ status.mode }}">
     Mode: <strong>{{ status.mode }}</strong>
@@ -39,9 +40,10 @@
           <div class="card-meta">
             <span class="platform-badge">{{ row.platform }}</span>
             <span>{{ row.account_slug }}</span>
-            <span>by {{ row.author }}</span>
+            <span><span class="author-avatar">{{ (row.author or '?')[0]|upper }}</span>{{ row.author }}</span>
             {% if row.sentiment %}<span class="sentiment-badge">{{ row.sentiment }}</span>{% endif %}
-            {% if row.category %}<span>category: {{ row.category }}</span>{% endif %}
+            {% if row.language and row.language != 'english' %}<span class="sentiment-badge">{{ row.language }}</span>{% endif %}
+            {% if row.category %}<span class="tag-pill">{{ row.category }}</span>{% endif %}
             {% if row.status == 'queued' %}<span>sends at {{ row.scheduled_send_at }}</span>{% endif %}
             {% if row.reason %}<span class="status-error">{{ row.reason }}</span>{% endif %}
           </div>

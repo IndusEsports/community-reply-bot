@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block content %}
+  <h1 class="page-title">Analytics</h1>
+
+  {% if not has_data %}
+    <p class="empty">Not enough activity yet — charts fill in as comments come through.</p>
+  {% endif %}
+
+  <h3>Daily volume (last 14 days)</h3>
+  <div class="card chart-card">{{ volume_svg | safe }}</div>
+
+  <h3 style="margin-top:24px;">Sentiment distribution</h3>
+  <div class="card chart-card">{{ sentiment_svg | safe }}</div>
+
+  <h3 style="margin-top:24px;">Top categories</h3>
+  <div class="card chart-card">{{ category_svg | safe }}</div>
+{% endblock %}

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import contextvars
 import json
-import secrets
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
-from .. import db, llm, scheduler
+from .. import auth, db, llm, scheduler
 from ..config import load_accounts, load_voice, settings
+from ..oauth import facebook as oauth_facebook
 from ..oauth import instagram as oauth_instagram
 from ..oauth import x_twitter as oauth_x
 from ..oauth import youtube as oauth_youtube
@@ -17,22 +17,36 @@ from ..scheduler import build_clients
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/dashboard/templates")
-security = HTTPBasic(auto_error=False)
 
-# Exposed as a callable in every template (base.html's nav/status strip) so
-# individual routes don't each have to thread runtime status through context.
+# Set by require_login on every authenticated request, read by the current_user()
+# Jinja global so base.html can show who's logged in without every route having
+# to thread it through context manually.
+_current_user: contextvars.ContextVar[dict | None] = contextvars.ContextVar("current_user", default=None)
+
 templates.env.globals["bot_status"] = lambda: {**scheduler.runtime.status(), "mode": settings.bot_mode}
+templates.env.globals["current_user"] = lambda: _current_user.get()
 
 
-def require_login(credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
-    # Username can be anything; only the password is checked (matches README step 7).
-    # If DASHBOARD_PASSWORD is blank, login is skipped entirely — no prompt, no check.
-    # Anyone with the URL gets straight in. Only do this if you know what that means.
-    if not settings.dashboard_password:
-        return "anonymous"
-    if credentials is None or not secrets.compare_digest(credentials.password, settings.dashboard_password):
-        raise HTTPException(status_code=401, detail="Wrong password", headers={"WWW-Authenticate": "Basic"})
-    return credentials.username
+def require_login(request: Request) -> dict:
+    # Fully-open mode: no users provisioned and no bootstrap password set.
+    # Anyone with the URL gets straight in — only true if you've deliberately
+    # left DASHBOARD_PASSWORD blank with no team accounts created.
+    if db.count_users() == 0 and not settings.dashboard_password:
+        user = {"username": "anonymous", "role": "admin"}
+        _current_user.set(user)
+        return user
+
+    session = auth.read_session_cookie(request.cookies.get(auth.COOKIE_NAME))
+    if not session:
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    _current_user.set(session)
+    return session
+
+
+def require_admin(user: dict = Depends(require_login)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin access required")
+    return user
 
 
 def _daily_cap_usage() -> list[dict]:
@@ -50,7 +64,7 @@ def _daily_cap_usage() -> list[dict]:
 
 
 @router.get("/", response_class=HTMLResponse)
-def inbox(request: Request, status: str = "all", user: str = Depends(require_login)):
+def inbox(request: Request, status: str = "all", user: dict = Depends(require_login)):
     if status == "queued":
         rows = db.list_queue()
     elif status == "held":
@@ -79,19 +93,19 @@ def inbox(request: Request, status: str = "all", user: str = Depends(require_log
 
 
 @router.get("/history", response_class=HTMLResponse)
-def history(request: Request, user: str = Depends(require_login)):
+def history(request: Request, user: dict = Depends(require_login)):
     rows = db.list_history()
     return templates.TemplateResponse(request, "history.html", {"rows": rows})
 
 
 @router.get("/ignored", response_class=HTMLResponse)
-def ignored(request: Request, user: str = Depends(require_login)):
+def ignored(request: Request, user: dict = Depends(require_login)):
     rows = db.list_ignored()
     return templates.TemplateResponse(request, "ignored.html", {"rows": rows})
 
 
 @router.post("/api/approve/{row_id}")
-def approve(row_id: int, variant_index: int = Form(0), user: str = Depends(require_login)):
+def approve(row_id: int, variant_index: int = Form(0), user: dict = Depends(require_login)):
     row = db.get_comment(row_id)
     if not row or row["status"] != "queued":
         raise HTTPException(404, "Not found or already handled")
@@ -129,7 +143,7 @@ def approve(row_id: int, variant_index: int = Form(0), user: str = Depends(requi
 
 
 @router.post("/api/reject/{row_id}")
-def reject(row_id: int, user: str = Depends(require_login)):
+def reject(row_id: int, user: dict = Depends(require_login)):
     row = db.get_comment(row_id)
     if not row or row["status"] != "queued":
         raise HTTPException(404, "Not found or already handled")
@@ -138,7 +152,7 @@ def reject(row_id: int, user: str = Depends(require_login)):
 
 
 @router.post("/api/held/{row_id}/draft-anyway")
-def held_draft_anyway(row_id: int, user: str = Depends(require_login)):
+def held_draft_anyway(row_id: int, user: dict = Depends(require_login)):
     row = db.get_comment(row_id)
     if not row or row["status"] != "held":
         raise HTTPException(404, "Not found or already handled")
@@ -151,7 +165,7 @@ def held_draft_anyway(row_id: int, user: str = Depends(require_login)):
 
 
 @router.post("/api/held/{row_id}/dismiss")
-def held_dismiss(row_id: int, user: str = Depends(require_login)):
+def held_dismiss(row_id: int, user: dict = Depends(require_login)):
     row = db.get_comment(row_id)
     if not row or row["status"] != "held":
         raise HTTPException(404, "Not found or already handled")
@@ -160,7 +174,7 @@ def held_dismiss(row_id: int, user: str = Depends(require_login)):
 
 
 @router.post("/api/failed/{row_id}/retry")
-def failed_retry(row_id: int, user: str = Depends(require_login)):
+def failed_retry(row_id: int, user: dict = Depends(require_login)):
     row = db.get_comment(row_id)
     if not row or row["status"] != "failed":
         raise HTTPException(404, "Not found or already handled")
@@ -181,7 +195,7 @@ def failed_retry(row_id: int, user: str = Depends(require_login)):
 
 
 @router.post("/api/restart")
-async def restart_bot(user: str = Depends(require_login)):
+async def restart_bot(user: dict = Depends(require_login)):
     """Reloads accounts.yaml / tone/voice.md / .env-derived settings and
     restarts the poll + sender loops, without needing a full redeploy."""
     await scheduler.runtime.restart(settings)
@@ -189,7 +203,7 @@ async def restart_bot(user: str = Depends(require_login)):
 
 
 @router.get("/tiktok-helper", response_class=HTMLResponse)
-def tiktok_helper_page(request: Request, user: str = Depends(require_login)):
+def tiktok_helper_page(request: Request, user: dict = Depends(require_login)):
     accounts = load_accounts()
     return templates.TemplateResponse(
         request,
@@ -203,7 +217,7 @@ def tiktok_helper_submit(
     request: Request,
     comment_text: str = Form(...),
     slug: str = Form(...),
-    user: str = Depends(require_login),
+    user: dict = Depends(require_login),
 ):
     accounts = load_accounts()
     account_cfg = accounts.get(slug)
@@ -236,16 +250,16 @@ def tiktok_helper_submit(
 
 # --- Connections: in-app OAuth, replacing manual .env token pasting ---
 
-_OAUTH_MODULES = {"youtube": oauth_youtube, "instagram": oauth_instagram, "x": oauth_x}
+_OAUTH_MODULES = {"youtube": oauth_youtube, "instagram": oauth_instagram, "x": oauth_x, "facebook": oauth_facebook}
 
 
 @router.get("/connections", response_class=HTMLResponse)
-def connections_page(request: Request, user: str = Depends(require_login)):
+def connections_page(request: Request, user: dict = Depends(require_admin)):
     accounts = load_accounts()
     existing = {(c["account_slug"], c["platform"]): c for c in db.list_connections()}
     rows = []
     for slug, cfg in accounts.items():
-        for platform in ("youtube", "instagram", "x"):
+        for platform in ("youtube", "instagram", "facebook", "x"):
             rows.append({
                 "slug": slug,
                 "display_name": cfg.get("display_name", slug),
@@ -256,7 +270,7 @@ def connections_page(request: Request, user: str = Depends(require_login)):
 
 
 @router.get("/connections/{platform}/start")
-def connections_start(platform: str, account: str, user: str = Depends(require_login)):
+def connections_start(platform: str, account: str, user: dict = Depends(require_admin)):
     module = _OAUTH_MODULES.get(platform)
     if not module:
         raise HTTPException(404, "Unknown platform")
@@ -264,7 +278,7 @@ def connections_start(platform: str, account: str, user: str = Depends(require_l
 
 
 @router.get("/connections/youtube/callback", response_class=HTMLResponse)
-def connections_youtube_callback(request: Request, code: str, state: str, user: str = Depends(require_login)):
+def connections_youtube_callback(request: Request, code: str, state: str, user: dict = Depends(require_login)):
     try:
         fields = oauth_youtube.handle_callback(code, state)
     except Exception as exc:  # noqa: BLE001
@@ -285,7 +299,7 @@ def connections_youtube_callback(request: Request, code: str, state: str, user: 
 
 
 @router.get("/connections/instagram/callback", response_class=HTMLResponse)
-def connections_instagram_callback(request: Request, code: str, state: str, user: str = Depends(require_login)):
+def connections_instagram_callback(request: Request, code: str, state: str, user: dict = Depends(require_login)):
     try:
         fields = oauth_instagram.handle_callback(code, state)
     except Exception as exc:  # noqa: BLE001
@@ -295,8 +309,19 @@ def connections_instagram_callback(request: Request, code: str, state: str, user
     return RedirectResponse(url="/connections", status_code=303)
 
 
+@router.get("/connections/facebook/callback", response_class=HTMLResponse)
+def connections_facebook_callback(request: Request, code: str, state: str, user: dict = Depends(require_login)):
+    try:
+        fields = oauth_facebook.handle_callback(code, state)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Facebook connect failed: {exc}")
+    account_slug = fields.pop("account_slug")
+    db.upsert_connection(account_slug, "facebook", **fields)
+    return RedirectResponse(url="/connections", status_code=303)
+
+
 @router.get("/connections/x/callback", response_class=HTMLResponse)
-def connections_x_callback(request: Request, oauth_token: str, oauth_verifier: str, user: str = Depends(require_login)):
+def connections_x_callback(request: Request, oauth_token: str, oauth_verifier: str, user: dict = Depends(require_login)):
     try:
         fields = oauth_x.handle_callback(oauth_token, oauth_verifier)
     except Exception as exc:  # noqa: BLE001
@@ -307,7 +332,7 @@ def connections_x_callback(request: Request, oauth_token: str, oauth_verifier: s
 
 
 @router.post("/connections/{platform}/disconnect")
-def connections_disconnect(platform: str, account: str = Form(...), user: str = Depends(require_login)):
+def connections_disconnect(platform: str, account: str = Form(...), user: dict = Depends(require_admin)):
     db.delete_connection(account, platform)
     return RedirectResponse(url="/connections", status_code=303)
 
@@ -335,11 +360,46 @@ _AUTOMATION_LABELS = {
         "Force review mode on Saturdays/Sundays regardless of BOT_MODE, so nothing "
         "auto-sends while the team's offline.",
     ),
+    "vip_priority_review": (
+        "VIP priority review",
+        "Authors listed in accounts.yaml's vip_authors: always get held for manual "
+        "review, never auto-sent — for mods, press, partners, etc.",
+    ),
+    "max_reply_length_280": (
+        "Cap reply length at 280 characters",
+        "Truncates drafted replies at a sentence boundary if they exceed 280 characters "
+        "— mainly matters for X, where longer replies would fail to post.",
+    ),
+    "auto_dismiss_stale_held": (
+        "Auto-dismiss stale held comments",
+        "Held comments older than 7 days automatically move to Ignored, so Held "
+        "doesn't silently pile up forever.",
+    ),
+    "skip_low_signal_comments": (
+        "Skip low-signal comments",
+        "Comments under 3 words or emoji-only never reach the LLM at all — saves quota "
+        "on comments with nothing to meaningfully reply to.",
+    ),
+    "auto_approve_high_confidence_positive": (
+        "Auto-approve high-confidence positive replies",
+        "Even in review mode, a clearly positive, safe-category reply sends immediately "
+        "instead of waiting for a manual Approve click.",
+    ),
+    "flag_repeat_commenter": (
+        "Flag repeat commenters",
+        "If the same author comments 3+ times in 24 hours, hold for review instead of "
+        "auto-handling — a lightweight signal against brigading/spam floods.",
+    ),
+    "reply_in_english_only": (
+        "Always reply in English",
+        "Opts out of automatic language-matching (Part 4) — replies are always drafted "
+        "in English regardless of what language the comment is in.",
+    ),
 }
 
 
 @router.get("/automations", response_class=HTMLResponse)
-def automations_page(request: Request, user: str = Depends(require_login)):
+def automations_page(request: Request, user: dict = Depends(require_admin)):
     accounts = load_accounts()
     rows = []
     for slug, cfg in accounts.items():
@@ -357,9 +417,82 @@ def automations_page(request: Request, user: str = Depends(require_login)):
 
 
 @router.post("/api/automations/{slug}/{key}/toggle")
-def automations_toggle(slug: str, key: str, user: str = Depends(require_login)):
+def automations_toggle(slug: str, key: str, user: dict = Depends(require_admin)):
     if key not in _AUTOMATION_LABELS:
         raise HTTPException(404, "Unknown automation")
     current = db.get_automations(slug)[key]
     db.set_automation(slug, key, not current)
     return RedirectResponse(url="/automations", status_code=303)
+
+
+# --- Login / logout / team accounts ---
+
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: str | None = None):
+    return templates.TemplateResponse(request, "login.html", {"error": error})
+
+
+@router.post("/login")
+def login_submit(username: str = Form(...), password: str = Form(...)):
+    row = db.get_user_by_username(username)
+    if not row or not auth.verify_password(password, row["password_hash"], row["salt"]):
+        return RedirectResponse(url="/login?error=Wrong+username+or+password", status_code=303)
+    token = auth.create_session_cookie(row["username"], row["role"])
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie(auth.COOKIE_NAME, token, max_age=auth.SESSION_MAX_AGE_SECONDS, httponly=True, samesite="lax")
+    return resp
+
+
+@router.post("/logout")
+def logout():
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie(auth.COOKIE_NAME)
+    return resp
+
+
+@router.get("/users", response_class=HTMLResponse)
+def users_page(request: Request, user: dict = Depends(require_admin)):
+    rows = db.list_users()
+    return templates.TemplateResponse(request, "users.html", {"rows": rows})
+
+
+@router.post("/users/create")
+def users_create(username: str = Form(...), password: str = Form(...), role: str = Form("reviewer"), user: dict = Depends(require_admin)):
+    if db.get_user_by_username(username):
+        raise HTTPException(400, "That username already exists")
+    password_hash, salt = auth.hash_password(password)
+    db.create_user(username, password_hash, salt, role)
+    return RedirectResponse(url="/users", status_code=303)
+
+
+@router.post("/users/{user_id}/delete")
+def users_delete(user_id: int, user: dict = Depends(require_admin)):
+    db.delete_user(user_id)
+    return RedirectResponse(url="/users", status_code=303)
+
+
+# --- Analytics (Part 3): real charts over the comment history, no external JS ---
+
+@router.get("/analytics", response_class=HTMLResponse)
+def analytics_page(request: Request, user: dict = Depends(require_login)):
+    from .. import charts
+
+    daily_rows = db.stats_by_day(days=14)
+    by_day: dict[str, dict] = {}
+    for row in daily_rows:
+        by_day.setdefault(row["day"], {})[row["status"]] = row["n"]
+    volume_rows = [{"day": day, **counts} for day, counts in sorted(by_day.items())]
+
+    sentiment_rows = [(row["sentiment"] or "unknown", row["n"]) for row in db.stats_by_sentiment()]
+    category_rows = [(row["category"] or "unknown", row["n"]) for row in db.stats_by_category()]
+
+    return templates.TemplateResponse(
+        request,
+        "analytics.html",
+        {
+            "volume_svg": charts.daily_volume_chart(volume_rows),
+            "sentiment_svg": charts.categorical_bar_list(sentiment_rows),
+            "category_svg": charts.magnitude_bar_list(category_rows),
+            "has_data": bool(volume_rows or sentiment_rows or category_rows),
+        },
+    )

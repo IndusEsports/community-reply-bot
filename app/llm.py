@@ -34,7 +34,8 @@ Read the player's comment and decide:
 - "skip" if it's angry, spammy, trolling, or clearly not worth a reply.
 
 Also tag the comment's sentiment/intent with one short word or two, e.g. "positive",
-"angry", "spam", "bug_report", "question", "neutral".
+"angry", "spam", "bug_report", "question", "neutral". And detect the comment's
+language (e.g. "english", "spanish", "portuguese", "tagalog") — {language_instruction}
 
 Never promise a refund, a fix date, a reward, or compensation. Never include a
 link or invite. Keep replies short (1-2 sentences), in the voice above.
@@ -44,8 +45,11 @@ differently from each other, same facts/voice) so a human can pick the one they
 like best. If action is "skip", reply_variants must be an empty list.
 
 Respond with ONLY minified JSON, no markdown fences, matching exactly:
-{{"action": "reply" or "skip", "category": "short label", "sentiment": "short label", "reply_variants": ["...", "...", "..."]}}
+{{"action": "reply" or "skip", "category": "short label", "sentiment": "short label", "language": "detected language", "reply_variants": ["...", "...", "..."]}}
 """
+
+_LANG_MATCH_INSTRUCTION = "write the reply variants in that SAME language, not English."
+_LANG_ENGLISH_ONLY_INSTRUCTION = "but always write the reply variants in English regardless of the comment's language."
 
 
 @dataclass
@@ -53,6 +57,7 @@ class LLMResult:
     action: str          # "reply" | "skip"
     category: str
     sentiment: str = "neutral"
+    language: str = "english"
     reply_variants: list[str] = field(default_factory=list)
 
     @property
@@ -72,7 +77,9 @@ def _format_learned_examples(learned_examples: list[dict] | None) -> str:
     )
 
 
-def _build_prompt(comment_text: str, account_cfg: dict, voice: str, learned_examples: list[dict] | None) -> tuple[str, str]:
+def _build_prompt(
+    comment_text: str, account_cfg: dict, voice: str, learned_examples: list[dict] | None, english_only: bool = False
+) -> tuple[str, str]:
     faq_lines = "\n".join(f"- Q: {item['q']}\n  A: {item['a']}" for item in account_cfg.get("faq", []))
     system = SYSTEM_TEMPLATE.format(
         display_name=account_cfg.get("display_name", account_cfg.get("slug", "the game")),
@@ -81,6 +88,7 @@ def _build_prompt(comment_text: str, account_cfg: dict, voice: str, learned_exam
         about=account_cfg.get("about", "").strip(),
         support_hint=account_cfg.get("support_hint", "").strip(),
         faq=faq_lines or "(none yet)",
+        language_instruction=_LANG_ENGLISH_ONLY_INSTRUCTION if english_only else _LANG_MATCH_INSTRUCTION,
     )
     user = f"Player comment:\n{comment_text.strip()}"
     return system, user
@@ -136,6 +144,7 @@ def _parse_json_response(raw: str) -> LLMResult:
             action=action,
             category=data.get("category", "unknown"),
             sentiment=data.get("sentiment", "neutral"),
+            language=data.get("language", "english"),
             reply_variants=variants,
         )
     except (json.JSONDecodeError, AttributeError):
@@ -150,7 +159,8 @@ def classify_and_draft(
     api_key: str,
     model: str,
     learned_examples: list[dict] | None = None,
+    english_only: bool = False,
 ) -> LLMResult:
-    system, user = _build_prompt(comment_text, account_cfg, voice, learned_examples)
+    system, user = _build_prompt(comment_text, account_cfg, voice, learned_examples, english_only)
     raw = _call_gemini(system, user, api_key, model)
     return _parse_json_response(raw)

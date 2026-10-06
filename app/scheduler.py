@@ -12,6 +12,7 @@ import logging
 from . import db, llm, policy
 from .config import Settings, load_accounts, load_voice
 from .platforms.base import PlatformClient
+from .platforms.facebook import FacebookClient
 from .platforms.instagram import InstagramClient
 from .platforms.x_twitter import XClient
 from .platforms.youtube import YouTubeClient
@@ -110,27 +111,66 @@ def build_clients(settings: Settings) -> dict[str, dict[str, PlatformClient]]:
                 access_token=conn["access_token"],
                 access_secret=conn["refresh_token"],  # OAuth1 access-token secret, stored in this column
             )
+        elif platform == "facebook":
+            per_account["facebook"] = FacebookClient(
+                page_id=conn["external_id"],
+                page_access_token=conn["access_token"],
+            )
 
     return clients
 
 
+_SAFE_AUTO_APPROVE_CATEGORIES = {"positive", "fan_appreciation", "unknown"}
+
+
 def _classify(account_slug: str, account_cfg: dict, comment_text: str, settings: Settings, voice: str) -> llm.LLMResult:
     """Shared LLM call site: always feeds in the account's auto-learned examples
-    (Part 4) alongside the static voice guide."""
+    (Part 4) alongside the static voice guide, and truncates variants to 280 chars
+    if that automation is on (Part 5: max_reply_length_280)."""
+    automations = db.get_automations(account_slug)
     learned = [dict(r) for r in db.list_learned_examples(account_slug)]
-    return llm.classify_and_draft(
+    result = llm.classify_and_draft(
         comment_text=comment_text,
         account_cfg=account_cfg,
         voice=voice,
         api_key=settings.gemini_api_key,
         model=settings.gemini_model,
         learned_examples=learned,
+        english_only=automations["reply_in_english_only"],
     )
+    if automations["max_reply_length_280"]:
+        result.reply_variants = [policy.truncate_to_length(v, 280) for v in result.reply_variants]
+    return result
 
 
 def process_one_comment(account_slug: str, account_cfg: dict, platform: str, client: PlatformClient, comment, settings: Settings, voice: str, channel: str = "comment") -> None:
     if db.has_seen(platform, account_slug, comment.comment_id):
         return
+
+    automations = db.get_automations(account_slug)
+
+    base_fields_early = dict(
+        platform=platform, account_slug=account_slug, channel=channel,
+        comment_id=comment.comment_id, post_id=comment.post_id, author=comment.author,
+        text=comment.text, comment_created_at=comment.created_at,
+    )
+
+    if automations["skip_low_signal_comments"] and policy.is_low_signal(comment.text):
+        db.insert_comment(**base_fields_early, status="ignored", reason="low-signal comment (too short/emoji-only)")
+        return
+
+    if automations["vip_priority_review"] and comment.author in (account_cfg.get("vip_authors") or []):
+        db.insert_comment(**base_fields_early, status="held", reason="VIP author — always held for manual review")
+        return
+
+    if automations["flag_repeat_commenter"]:
+        recent_count = db.count_recent_by_author(account_slug, comment.author, hours=24)
+        if recent_count >= 3:
+            db.insert_comment(
+                **base_fields_early, status="held",
+                reason=f"{comment.author} has commented {recent_count}+ times in 24h — possible brigading",
+            )
+            return
 
     startup_time = db.get_startup_time(account_slug, platform)
     today = db.today_count(account_slug, platform)
@@ -145,23 +185,13 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
         daily_cap=settings.daily_reply_cap,
     )
 
-    base_fields = dict(
-        platform=platform,
-        account_slug=account_slug,
-        channel=channel,
-        comment_id=comment.comment_id,
-        post_id=comment.post_id,
-        author=comment.author,
-        text=comment.text,
-        comment_created_at=comment.created_at,
-    )
+    base_fields = base_fields_early
 
     if result.decision == "ignore":
         db.insert_comment(**base_fields, status="ignored", reason=result.reason)
         return
 
     if result.decision == "hold":
-        automations = db.get_automations(account_slug)
         if automations["auto_hide_spam"] and "hold" in result.reason and hasattr(client, "hide_comment"):
             try:
                 client.hide_comment(comment)
@@ -172,7 +202,7 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
         db.insert_comment(**base_fields, status="held", reason=result.reason)
         return
 
-    if db.get_automations(account_slug)["instant_faq_reply"]:
+    if automations["instant_faq_reply"]:
         faq_answer = policy.match_faq(comment.text, account_cfg.get("faq", []))
         if faq_answer:
             send_at = policy.scheduled_send_at(comment.created_at)
@@ -194,16 +224,38 @@ def process_one_comment(account_slug: str, account_cfg: dict, platform: str, cli
     if llm_result.action == "skip":
         db.insert_comment(
             **base_fields, status="ignored", reason=f"skipped ({llm_result.category})",
-            category=llm_result.category, sentiment=llm_result.sentiment,
+            category=llm_result.category, sentiment=llm_result.sentiment, language=llm_result.language,
         )
         return
 
     send_at = policy.scheduled_send_at(comment.created_at)
+
+    # auto_approve_high_confidence_positive: skip the review queue entirely for
+    # safe, high-confidence positive replies — opt-in "smart auto" even in review mode.
+    if (
+        automations["auto_approve_high_confidence_positive"]
+        and llm_result.sentiment == "positive"
+        and llm_result.category in _SAFE_AUTO_APPROVE_CATEGORIES
+    ):
+        try:
+            client.post_reply(comment, llm_result.reply_text)
+            db.insert_comment(
+                **base_fields, status="sent", category=llm_result.category, sentiment=llm_result.sentiment,
+                language=llm_result.language, draft_reply=llm_result.reply_text,
+                draft_variants=json.dumps(llm_result.reply_variants), sent_at=db.now_iso(),
+            )
+            db.increment_today_count(account_slug, platform)
+            db.add_learned_example(account_slug, comment.text, llm_result.reply_text)
+            return
+        except Exception:  # noqa: BLE001 - fall through to the normal queue if auto-send fails
+            log.exception("auto_approve_high_confidence_positive send failed for %s", comment.comment_id)
+
     db.insert_comment(
         **base_fields,
         status="queued",
         category=llm_result.category,
         sentiment=llm_result.sentiment,
+        language=llm_result.language,
         draft_reply=llm_result.reply_text,
         draft_variants=json.dumps(llm_result.reply_variants),
         scheduled_send_at=send_at,
@@ -309,6 +361,10 @@ async def poll_loop(settings: Settings, stop_event: asyncio.Event, runtime: "Bot
             runtime.last_poll_error = None
 
         try:
+            for slug in accounts:
+                if db.get_automations(slug)["auto_dismiss_stale_held"]:
+                    db.dismiss_stale_held(slug)
+
             for slug, per_account in clients.items():
                 account_cfg = accounts[slug]
                 for platform, client in per_account.items():

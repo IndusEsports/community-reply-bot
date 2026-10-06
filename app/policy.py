@@ -106,3 +106,33 @@ def match_faq(comment_text: str, faq: list[dict], threshold: float = 0.6) -> str
             best_ratio = ratio
             best_answer = item.get("a")
     return best_answer if best_ratio >= threshold else None
+
+
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]+"
+)
+
+
+def is_low_signal(comment_text: str) -> bool:
+    """Used by the skip_low_signal_comments automation: comments that are just
+    emoji, or fewer than 3 words, carry essentially no signal to reply to."""
+    text = comment_text.strip()
+    if not text:
+        return True
+    stripped_of_emoji = _EMOJI_RE.sub("", text).strip()
+    if not stripped_of_emoji:
+        return True  # emoji-only
+    return len(stripped_of_emoji.split()) < 3
+
+
+def truncate_to_length(text: str, max_length: int) -> str:
+    """Used by the max_reply_length_280 automation. Trims at the last sentence
+    boundary under the limit rather than cutting mid-word where possible."""
+    if len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    for boundary in (". ", "! ", "? "):
+        idx = truncated.rfind(boundary)
+        if idx > 0:
+            return truncated[: idx + 1].strip()
+    return truncated.rsplit(" ", 1)[0].strip() + "…"

@@ -8,37 +8,57 @@
 </head>
 <body>
   {% set status = bot_status() %}
-  <header class="topbar">
-    <h1>Community Reply Bot</h1>
-    <nav>
-      <a href="/">Inbox</a>
-      <a href="/connections">Connections</a>
-      <a href="/automations">Automations</a>
-      <a href="/ignored">Ignored</a>
-      <a href="/history">History</a>
-      <a href="/tiktok-helper">TikTok Helper</a>
-    </nav>
-  </header>
-  <div class="status-strip">
-    <span class="status-dot {{ 'status-up' if status.running else 'status-down' }}"></span>
-    <span>{{ 'running' if status.running else 'stopped' }}</span>
-    <span class="status-sep">&middot;</span>
-    <span>mode: <strong>{{ status.mode }}</strong></span>
-    <span class="status-sep">&middot;</span>
-    <span>
-      last poll:
-      {% if status.last_poll_finished_at %}{{ status.last_poll_finished_at }}{% else %}never yet{% endif %}
-    </span>
-    {% if status.last_poll_error %}
-      <span class="status-sep">&middot;</span>
-      <span class="status-error">last error: {{ status.last_poll_error }}</span>
-    {% endif %}
-    <form method="post" action="/api/restart" class="restart-form">
-      <button type="submit" title="Reloads accounts.yaml / tone/voice.md and restarts the poll + sender loops">Restart bot</button>
-    </form>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">CR</span>
+        <span class="brand-name">Reply Bot</span>
+      </div>
+      {% set me = current_user() %}
+      <nav class="side-nav">
+        <a href="/" class="{{ 'active' if request.url.path == '/' }}"><span class="nav-ic">&#9776;</span> Inbox</a>
+        <a href="/analytics" class="{{ 'active' if request.url.path == '/analytics' }}"><span class="nav-ic">&#9776;</span> Analytics</a>
+        {% if me and me.role == 'admin' %}
+          <a href="/connections" class="{{ 'active' if request.url.path == '/connections' }}"><span class="nav-ic">&#9735;</span> Connections</a>
+          <a href="/automations" class="{{ 'active' if request.url.path == '/automations' }}"><span class="nav-ic">&#9881;</span> Automations</a>
+          <a href="/users" class="{{ 'active' if request.url.path == '/users' }}"><span class="nav-ic">&#9786;</span> Team</a>
+        {% endif %}
+        <a href="/ignored" class="{{ 'active' if request.url.path == '/ignored' }}"><span class="nav-ic">&#8709;</span> Ignored</a>
+        <a href="/history" class="{{ 'active' if request.url.path == '/history' }}"><span class="nav-ic">&#128337;</span> Activity Log</a>
+        <a href="/tiktok-helper" class="{{ 'active' if request.url.path == '/tiktok-helper' }}"><span class="nav-ic">&#9835;</span> TikTok Helper</a>
+      </nav>
+      <div class="side-foot">
+        <span class="avatar">{{ (me.username if me else 'U')[0]|upper }}</span>
+        <div class="side-foot-text">
+          <div class="side-foot-name">{{ me.username if me else 'Guest' }}</div>
+          <form method="post" action="/logout"><button type="submit" class="link-button">Sign out</button></form>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <div class="status-strip">
+        <span class="status-dot {{ 'status-up' if status.running else 'status-down' }}"></span>
+        <span>{{ 'running' if status.running else 'stopped' }}</span>
+        <span class="status-sep">&middot;</span>
+        <span>mode: <strong>{{ status.mode }}</strong></span>
+        <span class="status-sep">&middot;</span>
+        <span>
+          last poll:
+          {% if status.last_poll_finished_at %}{{ status.last_poll_finished_at }}{% else %}never yet{% endif %}
+        </span>
+        {% if status.last_poll_error %}
+          <span class="status-sep">&middot;</span>
+          <span class="status-error">last error: {{ status.last_poll_error }}</span>
+        {% endif %}
+        <form method="post" action="/api/restart" class="restart-form">
+          <button type="submit" title="Reloads accounts.yaml / tone/voice.md and restarts the poll + sender loops">Restart bot</button>
+        </form>
+      </div>
+      <main>
+        {% block content %}{% endblock %}
+      </main>
+    </div>
   </div>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
 </body>
 </html>

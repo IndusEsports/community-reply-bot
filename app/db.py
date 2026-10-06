@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS comments (
     reason TEXT,                       -- why it was skipped/held
     category TEXT,                     -- llm classification label
     sentiment TEXT,                    -- llm sentiment/intent tag
+    language TEXT,                     -- detected comment language
     draft_reply TEXT,                  -- the variant that will actually be sent
     draft_variants TEXT,               -- JSON list of up to 3 drafted options
     scheduled_send_at TEXT,
@@ -95,6 +96,15 @@ CREATE TABLE IF NOT EXISTS automations (
     enabled INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_slug, key)
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'reviewer',  -- 'admin' | 'reviewer'
+    created_at TEXT NOT NULL
+);
 """
 
 _SCHEMA_POSTGRES = """
@@ -112,6 +122,7 @@ CREATE TABLE IF NOT EXISTS comments (
     reason TEXT,
     category TEXT,
     sentiment TEXT,
+    language TEXT,
     draft_reply TEXT,
     draft_variants TEXT,
     scheduled_send_at TEXT,
@@ -170,6 +181,15 @@ CREATE TABLE IF NOT EXISTS automations (
     enabled INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_slug, key)
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'reviewer',
+    created_at TEXT NOT NULL
+);
 """
 
 _lock = threading.Lock()
@@ -205,12 +225,12 @@ def init_db(db_path: str, database_url: str = "") -> None:
                     cur.execute(
                         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
                         "AND tablename IN ('comments','daily_counts','startup_markers',"
-                        "'platform_connections','oauth_pending','learned_examples','automations')"
+                        "'platform_connections','oauth_pending','learned_examples','automations','users')"
                     )
                     found = {row[0] for row in cur.fetchall()}
                 required = {
                     "comments", "daily_counts", "startup_markers",
-                    "platform_connections", "oauth_pending", "learned_examples", "automations",
+                    "platform_connections", "oauth_pending", "learned_examples", "automations", "users",
                 }
                 missing = required - found
                 if missing:
@@ -516,6 +536,13 @@ _AUTOMATION_DEFAULTS = {
     "instant_faq_reply": False,
     "notify_only_bug_reports": False,
     "weekend_review_mode": False,
+    "vip_priority_review": False,
+    "max_reply_length_280": False,
+    "auto_dismiss_stale_held": False,
+    "skip_low_signal_comments": False,
+    "auto_approve_high_confidence_positive": False,
+    "flag_repeat_commenter": False,
+    "reply_in_english_only": False,
 }
 
 
@@ -536,3 +563,86 @@ def set_automation(account_slug: str, key: str, enabled: bool) -> None:
             ),
             (account_slug, key, int(enabled)),
         )
+
+
+# --- users: team accounts with roles (replaces the single shared dashboard password) ---
+
+def count_users() -> int:
+    with _cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM users")
+        return cur.fetchone()["n"]
+
+
+def create_user(username: str, password_hash: str, salt: str, role: str = "reviewer") -> None:
+    with _cursor() as cur:
+        cur.execute(
+            _sql("INSERT INTO users (username, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?)"),
+            (username, password_hash, salt, role, now_iso()),
+        )
+
+
+def get_user_by_username(username: str):
+    with _cursor() as cur:
+        cur.execute(_sql("SELECT * FROM users WHERE username=?"), (username,))
+        return cur.fetchone()
+
+
+def list_users() -> list:
+    with _cursor() as cur:
+        cur.execute("SELECT id, username, role, created_at FROM users ORDER BY id")
+        return cur.fetchall()
+
+
+def delete_user(user_id: int) -> None:
+    with _cursor() as cur:
+        cur.execute(_sql("DELETE FROM users WHERE id=?"), (user_id,))
+
+
+def count_recent_by_author(account_slug: str, author: str, hours: int = 24) -> int:
+    """Used by the flag_repeat_commenter automation."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _cursor() as cur:
+        cur.execute(
+            _sql("SELECT COUNT(*) AS n FROM comments WHERE account_slug=? AND author=? AND discovered_at>=?"),
+            (account_slug, author, cutoff),
+        )
+        return cur.fetchone()["n"]
+
+
+def dismiss_stale_held(account_slug: str, days: int = 7) -> int:
+    """Used by the auto_dismiss_stale_held automation (run once per poll cycle).
+    Returns how many rows were moved."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _cursor() as cur:
+        cur.execute(
+            _sql("UPDATE comments SET status='ignored', reason='auto-dismissed: held longer than the staleness window' "
+                 "WHERE status='held' AND account_slug=? AND discovered_at<?"),
+            (account_slug, cutoff),
+        )
+        return cur.rowcount
+
+
+def stats_by_day(days: int = 14) -> list:
+    """Sent/rejected volume per day, for the analytics dashboard."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    with _cursor() as cur:
+        cur.execute(
+            _sql(
+                "SELECT substr(discovered_at,1,10) AS day, status, COUNT(*) AS n FROM comments "
+                "WHERE substr(discovered_at,1,10) >= ? GROUP BY day, status ORDER BY day"
+            ),
+            (cutoff,),
+        )
+        return cur.fetchall()
+
+
+def stats_by_sentiment() -> list:
+    with _cursor() as cur:
+        cur.execute("SELECT sentiment, COUNT(*) AS n FROM comments WHERE sentiment IS NOT NULL GROUP BY sentiment ORDER BY n DESC")
+        return cur.fetchall()
+
+
+def stats_by_category() -> list:
+    with _cursor() as cur:
+        cur.execute("SELECT category, COUNT(*) AS n FROM comments WHERE category IS NOT NULL GROUP BY category ORDER BY n DESC LIMIT 10")
+        return cur.fetchall()

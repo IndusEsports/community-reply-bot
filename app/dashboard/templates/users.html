@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Team{% endblock %}
+{% block content %}
+  <h1 class="page-title">Team</h1>
+  <p class="hint">Admins can manage connections, automations, and the team. Reviewers can
+  only approve/reject/draft in the Inbox.</p>
+
+  <div class="card-list">
+    {% for row in rows %}
+      <div class="card">
+        <div class="card-meta">
+          <span class="author-avatar">{{ row['username'][0]|upper }}</span>
+          <span>{{ row['username'] }}</span>
+          <span class="role-badge">{{ row['role'] }}</span>
+          <span>since {{ row['created_at'] }}</span>
+        </div>
+        {% if row['username'] != 'admin' %}
+          <form method="post" action="/users/{{ row['id'] }}/delete">
+            <button type="submit" class="reject">Remove</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <h3 style="margin-top:28px;">Add a team member</h3>
+  <form method="post" action="/users/create" class="tiktok-form">
+    <label>Username<input type="text" name="username" required /></label>
+    <label>Password<input type="password" name="password" required /></label>
+    <label>Role
+      <select name="role">
+        <option value="reviewer">Reviewer (approve/reject only)</option>
+        <option value="admin">Admin (full access)</option>
+      </select>
+    </label>
+    <button type="submit" class="approve" style="align-self:flex-start;">Create</button>
+  </form>
+{% endblock %}
